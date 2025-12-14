@@ -730,7 +730,7 @@
      We keep this as the *in-possession* rating so the stars stay on a 0–5 scale.
      """
      return single_pos_rating(player, base_pos)
-@@ -466,245 +462,270 @@ def best_oop_rating(player: dict) -> float:
+@@ -466,245 +462,273 @@ def best_oop_rating(player: dict) -> float:
  def best_ip_position(player: dict):
      """Best IP position (tie-broken by pitch order)."""
      pos_ratings = player.get("position_ratings") or {}
@@ -1066,6 +1066,9 @@
 -            return
 +    st.session_state.formation_mode = ""
 +
++if "last_recompute_signature" not in st.session_state:
++    st.session_state.last_recompute_signature = None
++
 +if "state_loaded" not in st.session_state:
 +    load_state_from_disk()
 +    st.session_state.state_loaded = True
@@ -1146,7 +1149,7 @@
  
      band_rank = POTENTIAL_BAND_SORT.get(band, len(POTENTIAL_BAND_SORT))
      league_rank = POTENTIAL_LEAGUE_SORT.get(league, len(POTENTIAL_LEAGUE_SORT))
-@@ -895,51 +916,51 @@ def optimize_xi_positions_ip(
+@@ -895,51 +919,51 @@ def optimize_xi_positions_ip(
                  "mid_like": mid_like,
                  "st": st_count,
                  "fullback": fullback,
@@ -1199,7 +1202,7 @@
      best_score = -1.0
      best_assignments: list[dict[int, str]] = []
  
-@@ -1227,858 +1248,312 @@ def build_xi_variants(
+@@ -1227,858 +1251,337 @@ def build_xi_variants(
              try_candidate_xi(candidate_xi)
              if len(variants) >= max_variants:
                  return variants
@@ -1248,6 +1251,30 @@
 +        st.session_state.xi_variant_count = 0
 +        st.session_state.rules_tracker = {}
 +        return
++
++    slot_defs = [{"ip": pos.upper(), "oop": pos.upper()} for pos in formation.get("positions", [])]
++    return _recompute_squad_assignments_custom(
++        club_country,
++        slot_defs,
++        formation.get("name", ""),
++        force_variant_idx=force_variant_idx,
++    )
++
++
++def _recompute_signature(club_country: str) -> str:
++    """Generate a stable signature of inputs that drive squad recomputation."""
++
++    payload = {
++        "country": club_country,
++        "players": st.session_state.get("players", []),
++        "positions": st.session_state.get("positions", []),
++        "formations": st.session_state.get("formations", []),
++        "formation_selected": st.session_state.get("formation_selected", ""),
++    }
++    try:
++        return json.dumps(payload, sort_keys=True)
++    except Exception:
++        return ""
  
 -    if formation_mode == "4-2-3-1":
 -        return _recompute_squad_assignments_locked(
@@ -1267,15 +1294,16 @@
 -            club_country,
 -            force_variant_idx=force_variant_idx,
 -        )
-+    slot_defs = [{"ip": pos.upper(), "oop": pos.upper()} for pos in formation.get("positions", [])]
-+    return _recompute_squad_assignments_custom(
-+        club_country,
-+        slot_defs,
-+        formation.get("name", ""),
-+        force_variant_idx=force_variant_idx,
-+    )
  
 -def _recompute_squad_assignments_locked(
++def recompute_if_needed(club_country: str, *, force: bool = False):
++    """Skip expensive recomputations unless the driving inputs changed."""
++
++    signature = _recompute_signature(club_country)
++    if force or signature != st.session_state.get("last_recompute_signature"):
++        recompute_squad_assignments(club_country, force_variant_idx=None)
++        st.session_state.last_recompute_signature = signature
++
 +def _recompute_squad_assignments_custom(
      club_country: str,
 +    slot_defs: list[dict],
@@ -2094,7 +2122,7 @@
        - rating (combined IP+OOP for cover position) DESC
        - potential band (Leading > Good > Decent > Standard > rest)
        - potential league (Super League > Championship > Liga Nusantara)
-@@ -2114,57 +1589,53 @@ def _build_bench_and_reserves(
+@@ -2114,57 +1617,53 @@ def _build_bench_and_reserves(
  
      def _squad_cap_for_pos(pos: str) -> int:
          """Max XI+Bench+Reserves coverage for this position."""
@@ -2153,7 +2181,7 @@
          if i not in final_xi_indices
          and not players[i].get("injured")
          and players[i].get("availability", "Available") != "Out on loan"
-@@ -2546,59 +2017,59 @@ def _preview_locked_squad(
+@@ -2546,59 +2045,59 @@ def _preview_locked_squad(
              cand_list.append((idx, ip_score, oop_score, combined, foreign, u23_dom))
              if combined > max_score:
                  max_score = combined
@@ -2214,7 +2242,7 @@
          for (
              player_idx,
              ip_score,
-@@ -2612,62 +2083,64 @@ def _preview_locked_squad(
+@@ -2612,62 +2111,64 @@ def _preview_locked_squad(
  
              new_foreign = foreign_count + (1 if is_foreign else 0)
              if new_foreign > 7:
@@ -2279,7 +2307,7 @@
      final_xi_indices = list(dict.fromkeys(final_xi_indices))
      if len(final_xi_indices) != num_slots:
          # Safety: treat as no valid XI
-@@ -2677,178 +2150,178 @@ def _preview_locked_squad(
+@@ -2677,178 +2178,179 @@ def _preview_locked_squad(
      for p in players:
          p["assigned_position_ip"] = None
          p["assigned_position_oop"] = None
@@ -2416,7 +2444,9 @@
      if logo_file is not None:
          st.session_state.club_logo_bytes = logo_file.read()
  
- # Auto-recompute XI / bench / reserves when team & players exist
+-# Auto-recompute XI / bench / reserves when team & players exist
++# Auto-recompute XI / bench / reserves when team & players exist,
++# but skip redundant runs so the app loads immediately.
  if st.session_state.players and country:
 -    recompute_squad_assignments(country)
 -
@@ -2479,7 +2509,7 @@
 -# MAIN TABS
 -# =========================
 -
-+    recompute_squad_assignments(country)
++    recompute_if_needed(country)
 +
 +# =========================
 +# LOGOS (TOP RIGHT, NORMAL FLOW)
@@ -2579,7 +2609,22 @@
      # *** HERFRA er editor-UI altid synlig ***
      existing_names = [p["name"] for p in st.session_state.players]
      edit_col1, edit_col2 = st.columns([3, 1])
-@@ -3055,81 +2528,81 @@ with tab_players:
+@@ -3040,96 +2542,96 @@ with tab_players:
+             if not p_name.strip():
+                 st.warning("Player needs a name.")
+             else:
+                 nat_final = new_nat.strip() if new_nat.strip() else existing_nat.strip()
+                 if nat_final and nat_final not in st.session_state.known_nationalities:
+                     st.session_state.known_nationalities.append(nat_final)
+ 
+                 player = {
+                     "name": p_name.strip(),
+                     "age": int(p_age),
+                     "nationality": nat_final,
+                     "positions": p_positions or [],
+                     "position_ratings": position_ratings_ip,        # IP
+                     "position_ratings_oop": position_ratings_oop,  # OOP
+                     "current_band": current_band,
                      "current_level_league": current_level_league,
                      "potential_band": potential_band,
                      "potential_level_league": potential_level_league,
@@ -2590,7 +2635,8 @@
  
                  add_or_update_player(player)
                  if country:
-                     recompute_squad_assignments(country)
+-                    recompute_squad_assignments(country)
++                    recompute_if_needed(country, force=True)
                  st.success(f"Saved player {p_name}")
  
                  # mark for reset on next run
@@ -2603,7 +2649,8 @@
                  p for p in st.session_state.players if p["name"] != player_to_edit
              ]
              if country:
-                 recompute_squad_assignments(country)
+-                recompute_squad_assignments(country)
++                recompute_if_needed(country, force=True)
              st.session_state.reset_player_form = True
 -            st.success(f"Deleted player {player_to_edit}")
 -
@@ -2692,7 +2739,7 @@
      oop_avg = oop_total / n if n else 0.0
  
      base_ip = base.get("assignment_ip", {}) or {}
-@@ -3176,132 +2649,198 @@ def describe_xi_variant(idx: int) -> str:
+@@ -3176,132 +2678,198 @@ def describe_xi_variant(idx: int) -> str:
      # Er det samme XI-spillere eller rigtige swaps?
      same_xi = (base_xi == cur_xi)
  
@@ -2952,7 +2999,60 @@
  
                      # OOP uses explicit OOP if present, otherwise the IP position
                      oop_pos = assign_oop.get(idx) or assign_ip.get(idx)
-@@ -3634,51 +3173,51 @@ with tab_xi:
+@@ -3514,51 +3082,51 @@ with tab_xi:
+                 ip = float(v.get("total_ip", 0.0))
+                 oop = float(v.get("total_oop", 0.0))
+                 return (ip + oop) / n
+ 
+             # Variants that respect all active preferences
+             candidate_indices = [
+                 i for i, v in enumerate(variants) if variant_matches(v)
+             ]
+ 
+             if candidate_indices:
+                 best_idx = max(candidate_indices, key=lambda i: _avg_score(variants[i]))
+             else:
+                 # No variant can satisfy that combo → fallback to best scoring overall (automatic)
+                 best_idx = max(range(variant_count), key=lambda i: _avg_score(variants[i]))
+ 
+             prev_idx = st.session_state.get("xi_variant_choice", 0)
+             if (
+                 not isinstance(prev_idx, int)
+                 or prev_idx < 0
+                 or prev_idx >= variant_count
+             ):
+                 prev_idx = 0
+ 
+             if best_idx != prev_idx and country:
+                 st.session_state.xi_variant_choice = int(best_idx)
+-                recompute_squad_assignments(country, force_variant_idx=int(best_idx))
++                recompute_if_needed(country, force=True)
+ 
+             # Just show what ended up active, NOT a manual picker
+             st.caption(
+                 f"Active XI variant: {describe_xi_variant(st.session_state.xi_variant_choice)}"
+             )
+ 
+         st.markdown("---")
+ 
+         # ========== STARTING XI FORMATIONS ==========
+ 
+         xi_players = [
+             p for p in st.session_state.players if p.get("squad_role") == "XI"
+         ]
+ 
+         if xi_players:
+             # Show XI average stars IP & OOP for the *current* chosen variant
+             ip_ratings = []
+             oop_ratings = []
+             for p in xi_players:
+                 pos_ip = p.get("assigned_position_ip")
+                 if pos_ip:
+                     ip_ratings.append(single_pos_rating(p, pos_ip))
+ 
+                 pos_oop = (
+                     p.get("assigned_position_oop")
+@@ -3634,51 +3202,51 @@ with tab_xi:
                          }
                      )
  
@@ -3005,7 +3105,7 @@
                                  "__stars_numeric__": ip_rating,
                              }
                          )
-@@ -3710,51 +3249,51 @@ with tab_xi:
+@@ -3710,51 +3278,51 @@ with tab_xi:
                          ).drop(
                              columns=[
                                  "__stars_numeric__",
@@ -3058,7 +3158,7 @@
                              }
                          )
  
-@@ -3769,51 +3308,51 @@ with tab_xi:
+@@ -3769,130 +3337,130 @@ with tab_xi:
                          df_res["__band_rank__"] = df_res["Potential level"].map(
                              POTENTIAL_BAND_SORT
                          ).fillna(len(POTENTIAL_BAND_SORT))
@@ -3111,12 +3211,134 @@
          for p in injured_players:
              rows_inj.append({
                  "Name": p.get("name", ""),
-@@ -4031,104 +3570,82 @@ if surplus_players:
+                 "Positions": ", ".join(p.get("positions") or []),
+                 "Age": p.get("age", ""),
+                 "Nationality": p.get("nationality", ""),
+                 "Availability": p.get("availability", "Available"),
+             })
+         df_inj = pd.DataFrame(rows_inj)
+         st.dataframe(df_inj, use_container_width=True, hide_index=True)
+ 
+         # ---- RECOVER PLAYER ----
+         st.markdown("#### Mark player as recovered")
+         recover_choice = st.radio(
+             "Select injured player",
+             options=[""] + [p.get("name", "") for p in injured_players],
+             format_func=lambda x: "Select player" if x == "" else x,
+             key="inj_recover_choice",
+         )
+ 
+         if recover_choice:
+             if st.button("Set as recovered", key="inj_recover_button"):
+                 for p in all_players:
+                     if p.get("name", "") == recover_choice:
+                         p["injured"] = False
+                         break
+                 if country:
+-                    recompute_squad_assignments(country)
++                    recompute_if_needed(country, force=True)
+                 st.rerun()
+ 
+     # --- ADD NEW INJURED PLAYER ---
+     st.markdown("#### Add injured player")
+ 
+     healthy_candidates = [
+         p for p in all_players
+         if not p.get("injured", False)
+         and p.get("availability", "Available") != "Out on loan"
+     ]
+ 
+     if not healthy_candidates:
+         st.caption("No healthy players available.")
+     else:
+         add_choice = st.selectbox(
+             "Select player to mark as injured",
+             options=[""] + [p.get("name", "") for p in healthy_candidates],
+             format_func=lambda x: "Select player" if x == "" else x,
+             key="inj_add_choice",
+         )
+ 
+         if add_choice:
+             if st.button("Mark as injured", key="inj_add_button"):
+                 for p in all_players:
+                     if p.get("name", "") == add_choice:
+                         p["injured"] = True
+                         break
+                 if country:
+-                    recompute_squad_assignments(country)
++                    recompute_if_needed(country, force=True)
+                 st.rerun()
+ 
+ # ========== FOREIGN PLAYERS (CAP 11) ==========
+ foreign_indices: list[int] = []
+ for idx, p in enumerate(all_players):
+     # Only care about players still at the club
+     if p.get("availability", "Available") == "Out on loan":
+         continue
+     nat = p.get("nationality", "")
+     if not nat or is_domestic(nat, country):
+         continue
+     foreign_indices.append(idx)
+ 
+ def _foreign_sort_key(idx: int):
+     p = all_players[idx]
+     # Sort by best IP stars (desc), then potential (band/league), then age (younger first)
+     return (
+         -best_ip_rating(p),
+         *potential_tiebreak_tuple(p),
+     )
+ 
+ foreign_indices_sorted = sorted(foreign_indices, key=_foreign_sort_key)
+ foreign_surplus_indices: set[int] = set()
+ 
+ # Cap at 11 foreign players: anything above is "surplus" foreign
+@@ -3993,142 +3561,120 @@ if surplus_players:
+                 POTENTIAL_LEAGUE_SORT
+             ).fillna(len(POTENTIAL_LEAGUE_SORT))
+             df_surplus["__band_rank__"] = df_surplus["Potential level"].map(
+                 POTENTIAL_BAND_SORT
+             ).fillna(len(POTENTIAL_BAND_SORT))
+             df_surplus = df_surplus.sort_values(
+                 ["__stars_numeric__", "__league_rank__", "__band_rank__", "Age", "Name"],
+                 ascending=[False, True, True, True, True],
+                 kind="mergesort",
+             ).drop(columns=["__stars_numeric__", "__league_rank__", "__band_rank__"])
+         st.dataframe(df_surplus, use_container_width=True, hide_index=True)
+ 
+         st.markdown("#### Actions")
+ 
+         # Per-player buttons: Keep / Loan out / Sell
+         for p in surplus_players:
+             name = p.get("name", "")
+             col_name, col_keep, col_loan, col_sell = st.columns([3, 1, 1, 1])
+             with col_name:
+                 st.markdown(f"**{name}**")
+ 
+             with col_keep:
+                 if st.button("Keep", key=f"surplus_keep_{name}"):
+                     p["list_status"] = "None"
+                     if country:
+-                        recompute_squad_assignments(country)
++                        recompute_if_needed(country, force=True)
+                     st.rerun()
+ 
+             with col_loan:
+                 if st.button("Loan out", key=f"surplus_loan_{name}"):
+                     p["availability"] = "Out on loan"
+                     p["list_status"] = "Loan list"
+                     if country:
+-                        recompute_squad_assignments(country)
++                        recompute_if_needed(country, force=True)
+                     st.rerun()
+ 
+             with col_sell:
+                 if st.button("Sell", key=f"surplus_sell_{name}"):
                      st.session_state.players = [
                          q for q in st.session_state.players if q is not p
                      ]
                      if country:
-                         recompute_squad_assignments(country)
+-                        recompute_squad_assignments(country)
++                        recompute_if_needed(country, force=True)
                      st.rerun()
  
  # ========== PLAYERS OUT ON LOAN ==========
@@ -3236,7 +3458,7 @@
                      return p.get("bench_cover_pos")
                  if role == "Reserve":
                      return p.get("reserve_cover_pos")
-@@ -4216,31 +3733,31 @@ with tab_overview:
+@@ -4216,31 +3762,31 @@ with tab_overview:
                              "Players": players_display,
                              "_avg_numeric": avg_rating,
                              "_cov": cov_count,
