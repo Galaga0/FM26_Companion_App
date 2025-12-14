@@ -3,7 +3,6 @@
 -import pandas as pd
 -import base64
 -import json
-+#!/usr/bin/env python3
 +import streamlit as st
 +import pandas as pd
 +import base64
@@ -730,7 +729,7 @@
      We keep this as the *in-possession* rating so the stars stay on a 0–5 scale.
      """
      return single_pos_rating(player, base_pos)
-@@ -466,245 +462,273 @@ def best_oop_rating(player: dict) -> float:
+@@ -466,245 +461,273 @@ def best_oop_rating(player: dict) -> float:
  def best_ip_position(player: dict):
      """Best IP position (tie-broken by pitch order)."""
      pos_ratings = player.get("position_ratings") or {}
@@ -1149,7 +1148,7 @@
  
      band_rank = POTENTIAL_BAND_SORT.get(band, len(POTENTIAL_BAND_SORT))
      league_rank = POTENTIAL_LEAGUE_SORT.get(league, len(POTENTIAL_LEAGUE_SORT))
-@@ -895,51 +919,51 @@ def optimize_xi_positions_ip(
+@@ -895,51 +918,51 @@ def optimize_xi_positions_ip(
                  "mid_like": mid_like,
                  "st": st_count,
                  "fullback": fullback,
@@ -1202,7 +1201,7 @@
      best_score = -1.0
      best_assignments: list[dict[int, str]] = []
  
-@@ -1227,858 +1251,337 @@ def build_xi_variants(
+@@ -1227,858 +1250,337 @@ def build_xi_variants(
              try_candidate_xi(candidate_xi)
              if len(variants) >= max_variants:
                  return variants
@@ -2122,7 +2121,7 @@
        - rating (combined IP+OOP for cover position) DESC
        - potential band (Leading > Good > Decent > Standard > rest)
        - potential league (Super League > Championship > Liga Nusantara)
-@@ -2114,57 +1617,53 @@ def _build_bench_and_reserves(
+@@ -2114,57 +1616,53 @@ def _build_bench_and_reserves(
  
      def _squad_cap_for_pos(pos: str) -> int:
          """Max XI+Bench+Reserves coverage for this position."""
@@ -2181,7 +2180,7 @@
          if i not in final_xi_indices
          and not players[i].get("injured")
          and players[i].get("availability", "Available") != "Out on loan"
-@@ -2546,59 +2045,59 @@ def _preview_locked_squad(
+@@ -2546,59 +2044,59 @@ def _preview_locked_squad(
              cand_list.append((idx, ip_score, oop_score, combined, foreign, u23_dom))
              if combined > max_score:
                  max_score = combined
@@ -2242,7 +2241,7 @@
          for (
              player_idx,
              ip_score,
-@@ -2612,62 +2111,64 @@ def _preview_locked_squad(
+@@ -2612,62 +2110,64 @@ def _preview_locked_squad(
  
              new_foreign = foreign_count + (1 if is_foreign else 0)
              if new_foreign > 7:
@@ -2307,7 +2306,7 @@
      final_xi_indices = list(dict.fromkeys(final_xi_indices))
      if len(final_xi_indices) != num_slots:
          # Safety: treat as no valid XI
-@@ -2677,178 +2178,179 @@ def _preview_locked_squad(
+@@ -2677,178 +2177,179 @@ def _preview_locked_squad(
      for p in players:
          p["assigned_position_ip"] = None
          p["assigned_position_oop"] = None
@@ -2609,7 +2608,7 @@
      # *** HERFRA er editor-UI altid synlig ***
      existing_names = [p["name"] for p in st.session_state.players]
      edit_col1, edit_col2 = st.columns([3, 1])
-@@ -3040,96 +2542,96 @@ with tab_players:
+@@ -3040,96 +2541,96 @@ with tab_players:
              if not p_name.strip():
                  st.warning("Player needs a name.")
              else:
@@ -2739,7 +2738,7 @@
      oop_avg = oop_total / n if n else 0.0
  
      base_ip = base.get("assignment_ip", {}) or {}
-@@ -3176,132 +2678,198 @@ def describe_xi_variant(idx: int) -> str:
+@@ -3176,132 +2677,198 @@ def describe_xi_variant(idx: int) -> str:
      # Er det samme XI-spillere eller rigtige swaps?
      same_xi = (base_xi == cur_xi)
  
@@ -2999,7 +2998,7 @@
  
                      # OOP uses explicit OOP if present, otherwise the IP position
                      oop_pos = assign_oop.get(idx) or assign_ip.get(idx)
-@@ -3514,51 +3082,51 @@ with tab_xi:
+@@ -3514,51 +3081,51 @@ with tab_xi:
                  ip = float(v.get("total_ip", 0.0))
                  oop = float(v.get("total_oop", 0.0))
                  return (ip + oop) / n
@@ -3052,7 +3051,7 @@
  
                  pos_oop = (
                      p.get("assigned_position_oop")
-@@ -3634,51 +3202,51 @@ with tab_xi:
+@@ -3634,51 +3201,51 @@ with tab_xi:
                          }
                      )
  
@@ -3105,7 +3104,7 @@
                                  "__stars_numeric__": ip_rating,
                              }
                          )
-@@ -3710,51 +3278,51 @@ with tab_xi:
+@@ -3710,51 +3277,51 @@ with tab_xi:
                          ).drop(
                              columns=[
                                  "__stars_numeric__",
@@ -3158,7 +3157,7 @@
                              }
                          )
  
-@@ -3769,130 +3337,130 @@ with tab_xi:
+@@ -3769,130 +3336,130 @@ with tab_xi:
                          df_res["__band_rank__"] = df_res["Potential level"].map(
                              POTENTIAL_BAND_SORT
                          ).fillna(len(POTENTIAL_BAND_SORT))
@@ -3292,7 +3291,7 @@
  foreign_surplus_indices: set[int] = set()
  
  # Cap at 11 foreign players: anything above is "surplus" foreign
-@@ -3993,142 +3561,120 @@ if surplus_players:
+@@ -3993,142 +3560,120 @@ if surplus_players:
                  POTENTIAL_LEAGUE_SORT
              ).fillna(len(POTENTIAL_LEAGUE_SORT))
              df_surplus["__band_rank__"] = df_surplus["Potential level"].map(
@@ -3458,7 +3457,7 @@
                      return p.get("bench_cover_pos")
                  if role == "Reserve":
                      return p.get("reserve_cover_pos")
-@@ -4216,31 +3762,31 @@ with tab_overview:
+@@ -4216,31 +3761,31 @@ with tab_overview:
                              "Players": players_display,
                              "_avg_numeric": avg_rating,
                              "_cov": cov_count,
@@ -3496,4 +3495,3 @@
 +# =========================
 +
 +save_state_to_disk()
-\ No newline at end of file
