@@ -1,9 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/fm26_helper_app.py b/fm26_helper_app.py
-index 5148148bac255d6b8df1ae90af746ef982fcdf6a..5ad834308291a8e6a22785254f29925e658482b5 100644
---- a/fm26_helper_app.py
-+++ b/fm26_helper_app.py
-@@ -1,404 +1,400 @@
 -#!/usr/bin/env python3
 -import streamlit as st
 -import pandas as pd
@@ -3281,6 +3275,3 @@ index 5148148bac255d6b8df1ae90af746ef982fcdf6a..5ad834308291a8e6a22785254f29925e
 +
 +save_state_to_disk()
 \ No newline at end of file
- 
-EOF
-)
