@@ -14,11 +14,7 @@ STATE_FILE = "fm26_state.json"
 # FIXED INDONESIA STRUCTURE
 # =========================
 
-SUPER_LEAGUE_TEAMS = [for key in ["positions", "players", "known_nationalities", "formations", "formation_selected"]:
-    if key in data:
-        st.session_state[key] = data[key]
-
-
+SUPER_LEAGUE_TEAMS = [
     "Arema",
     "Bali United",
     "Barito Putera",
@@ -324,7 +320,8 @@ OUT_OF_POSSESSION_ROLES = {
 # STAR & RATING HELPERS
 # =========================
 
-STAR_VALUES = [i / 2 for i in range(0, 11)]
+STAR_VALUES = [i / 2 for i in range(0, 11)]          # for position ratings (0.0–5.0)
+CP_STAR_VALUES = [i / 2 for i in range(1, 11)]        # for Current/Potential only (0.5–5.0)
 RATING_BANDS = ["Leading", "Good", "Decent", "Standard"]
 POTENTIAL_EXTRA = ["Unlikely to improve", "Could improve a lot", "Could improve slightly", "Could improve significantly"]
 RATING_LEAGUES = ["Super League", "Championship", "Liga Nusantara"]
@@ -333,29 +330,23 @@ RATING_LEAGUES = ["Super League", "Championship", "Liga Nusantara"]
 POTENTIAL_BAND_SORT = {band: idx for idx, band in enumerate(RATING_BANDS)}
 POTENTIAL_LEAGUE_SORT = {lg: idx for idx, lg in enumerate(RATING_LEAGUES)}
 
-def potential_tiebreak_tuple(player: dict) -> tuple[int, int, int]:
+def potential_tiebreak_tuple(player: dict) -> tuple[float, int]:
     """
-    Common tiebreaker for players:
-      1) potential_band (better band first)
-      2) potential_level_league (higher league first)
-      3) age (younger first)
-    Used when ratings are equal.
+    Tiebreaker for players when ratings are equal:
+      1) potential_stars (higher first)
+      2) age (younger first)
     """
-    band = (player.get("potential_band", "") or "").strip()
-    league = (player.get("potential_level_league", "") or "").strip()
+    try:
+        pot = float(player.get("potential_stars", 0.0) or 0.0)
+    except Exception:
+        pot = 0.0
 
     try:
         age = int(player.get("age", 0) or 0)
     except Exception:
         age = 0
 
-    band_rank = POTENTIAL_BAND_SORT.get(band, len(POTENTIAL_BAND_SORT))
-    league_rank = POTENTIAL_LEAGUE_SORT.get(league, len(POTENTIAL_LEAGUE_SORT))
-
-    # Lower band_rank = better (Leading < Good < Decent < Standard)
-    # Lower league_rank = better (Super League < Championship < Liga Nusantara)
-    # Lower age = better (younger first)
-    return (band_rank, league_rank, age)
+    return (-pot, age)
 
 
 def stars_to_label(value: float) -> str:
@@ -488,21 +479,24 @@ def best_cover_pos_for_formation(player: dict, formation_mode: str | None = None
     """
     Return the best cover position for this player given the active formation.
 
-    - For locked formations (4-2-3-1 / 5-2-1-2), only positions that exist in that shape.
-    - For Auto, prefer positions where the player actually has IP or OOP rating.
-    - Uses combined IP + OOP for scoring, so both sides are taken into account.
+    - Allowed positions are derived from the formation's IP slots (unique).
+    - Uses combined IP + OOP for scoring.
     """
     if formation_mode is None:
-        formation_mode = st.session_state.get("formation_mode", "Auto")
+        formation_mode = st.session_state.get("formation_mode")
 
-    formation_mode = formation_mode or "Auto"
+    formations = st.session_state.get("formations", {}) or {}
+    fdef = formations.get(formation_mode or "", {}) or {}
 
-    if formation_mode == "4-2-3-1":
-        allowed = ["GK", "LB", "CB", "RB", "CDM", "CM", "CAM", "LW", "RW", "ST"]
-    elif formation_mode == "5-2-1-2":
-        allowed = ["GK", "LWB", "CB", "RWB", "CDM", "CM", "CAM", "ST"]
-    else:
-        # Auto: prefer positions they actually have a rating in
+    allowed_raw = fdef.get("ip") or []
+    allowed = []
+    for p in allowed_raw:
+        pu = (p or "").upper()
+        if pu in POSITION_CHOICES and pu not in allowed:
+            allowed.append(pu)
+
+    # If formation missing/invalid, fall back to anywhere they can actually play
+    if not allowed:
         pos_r_ip = player.get("position_ratings") or {}
         pos_r_oop = player.get("position_ratings_oop") or {}
         allowed = [
@@ -522,7 +516,6 @@ def best_cover_pos_for_formation(player: dict, formation_mode: str | None = None
 
     return best_pos if best_score > 0 else None
 
-
 def compute_primary_position(player: dict) -> str | None:
     """Return the player's primary position based on the highest rating."""
     pos_ratings = player.get("position_ratings") or {}
@@ -538,13 +531,11 @@ def compute_primary_position(player: dict) -> str | None:
     return best_positions[0] if best_positions else None
 
 def current_rating_display_overall(player: dict) -> str:
-    stars = best_position_rating(player)
-    star_str = stars_to_label(stars)
-    band = player.get("current_band", "")
-    lvl = player.get("current_level_league", "")
-    text = rating_text(band, lvl)
-    return f"{star_str} | {text}" if text else star_str
-
+    try:
+        stars = float(player.get("current_stars", 0.0) or 0.0)
+    except Exception:
+        stars = 0.0
+    return stars_to_label(stars)
 
 def current_rating_for_position_display(player: dict, pos: str) -> str:
     stars = combined_rating_for_position(player, pos)
@@ -554,12 +545,12 @@ def current_rating_for_position_display(player: dict, pos: str) -> str:
     text = rating_text(band, lvl)
     return f"{star_str} | {text}" if text else star_str
 
-
 def potential_rating_display(player: dict) -> str:
-    band = player.get("potential_band", "")
-    lvl = player.get("potential_level_league", "")
-    return rating_text(band, lvl)
-
+    try:
+        stars = float(player.get("potential_stars", 0.0) or 0.0)
+    except Exception:
+        stars = 0.0
+    return stars_to_label(stars)
 
 # =========================
 # STATE LOAD / SAVE
@@ -574,7 +565,7 @@ def load_state_from_disk():
     except Exception:
         return
 
-    for key in ["positions", "players", "known_nationalities"]:
+    for key in ["positions", "players", "known_nationalities", "formations", "formation_mode"]:
         if key in data:
             st.session_state[key] = data[key]
 
@@ -599,18 +590,17 @@ def save_state_to_disk():
             )
 
         data = {
-    "positions": st.session_state.get("positions", []),
-    "players": st.session_state.get("players", []),
-    "known_nationalities": st.session_state.get("known_nationalities", []),
-    "country_select": st.session_state.get("country_select", ""),
-    "league_select": st.session_state.get("league_select", ""),
-    "team_select": st.session_state.get("team_select", ""),
-    "team_custom_name": st.session_state.get("team_custom_name", ""),
-    "club_logo_b64": logo_b64,
-    "formations": st.session_state.get("formations", []),
-    "formation_selected": st.session_state.get("formation_selected", ""),
-}
-
+            "positions": st.session_state.get("positions", []),
+            "players": st.session_state.get("players", []),
+            "known_nationalities": st.session_state.get("known_nationalities", []),
+            "country_select": st.session_state.get("country_select", ""),
+            "league_select": st.session_state.get("league_select", ""),
+            "team_select": st.session_state.get("team_select", ""),
+            "team_custom_name": st.session_state.get("team_custom_name", ""),
+            "club_logo_b64": logo_b64,
+            "formations": st.session_state.get("formations", {}),
+            "formation_mode": st.session_state.get("formation_mode", "4-2-3-1"),
+        }
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -650,7 +640,76 @@ if "xi_variant_choice" not in st.session_state:
     st.session_state.xi_variant_choice = 0
 
 if "formation_mode" not in st.session_state:
-    st.session_state.formation_mode = "Auto"
+    st.session_state.formation_mode = "4-2-3-1"
+
+if "formations" not in st.session_state:
+    st.session_state.formations = {
+        "4-2-3-1": {
+            "ip": [
+                "GK",
+                "LB", "CB", "CB", "RB",
+                "CDM", "CM",
+                "CAM",
+                "LW", "RW",
+                "ST",
+            ],
+            "oop": [
+                "GK",
+                "LB", "CB", "CB", "RB",
+                "CDM", "CDM",
+                "CM",
+                "LM", "RM",
+                "ST",
+            ],
+        },
+        "5-2-1-2": {
+            "ip": [
+                "GK",
+                "LWB", "CB", "CB", "RWB",
+                "CDM", "CM", "CM",
+                "CAM",
+                "ST", "ST",
+            ],
+            "oop": [
+                "GK",
+                "LWB", "CB", "CB", "CB",
+                "RWB", "CDM", "CDM",
+                "CAM",
+                "ST", "ST",
+            ],
+        },
+    }
+
+FORMATION_MAX_COUNTS = {"CB": 3, "CM": 3, "CDM": 3, "CAM": 3, "ST": 3}
+
+def formation_max_for_pos(pos: str) -> int:
+    pos = (pos or "").upper()
+    return int(FORMATION_MAX_COUNTS.get(pos, 1))
+
+def validate_formation_positions(ip_11: list[str], oop_11: list[str]) -> tuple[bool, str]:
+    if len(ip_11) != 11 or len(oop_11) != 11:
+        return False, "Formation must have exactly 11 IP positions and 11 OOP positions."
+
+    def _validate_one(label: str, positions_11: list[str]) -> tuple[bool, str]:
+        counts = Counter()
+        for p in positions_11:
+            pu = (p or "").upper().strip()
+            if pu not in POSITION_CHOICES:
+                return False, f"Invalid position in {label}: {pu}"
+            counts[pu] += 1
+            if counts[pu] > formation_max_for_pos(pu):
+                return False, f"Too many {pu} in {label}: max {formation_max_for_pos(pu)}"
+        return True, "OK"
+
+    ok, msg = _validate_one("IP", ip_11)
+    if not ok:
+        return ok, msg
+
+    ok, msg = _validate_one("OOP", oop_11)
+    if not ok:
+        return ok, msg
+
+    return True, "OK"
 
 if "state_loaded" not in st.session_state:
     load_state_from_disk()
@@ -1262,26 +1321,22 @@ def recompute_squad_assignments(
     - 'Auto' uses the old flexible 2+ logic via _recompute_squad_assignments_auto.
     - Locked 4-2-3-1 / 5-2-1-2 use _recompute_squad_assignments_locked.
     """
-    formation_mode = st.session_state.get("formation_mode", "Auto")
+    formation_mode = st.session_state.get("formation_mode", "4-2-3-1")
+    formations = st.session_state.get("formations", {}) or {}
 
-    if formation_mode == "4-2-3-1":
-        return _recompute_squad_assignments_locked(
-            club_country,
-            "4-2-3-1",
-            force_variant_idx=force_variant_idx,
-        )
-    elif formation_mode == "5-2-1-2":
-        return _recompute_squad_assignments_locked(
-            club_country,
-            "5-2-1-2",
-            force_variant_idx=force_variant_idx,
-        )
-    else:
-        # Auto uses the original dynamic 2+ logic across XI variants
-        return _recompute_squad_assignments_auto(
-            club_country,
-            force_variant_idx=force_variant_idx,
-        )
+    # If the chosen formation doesn't exist anymore, fall back to the first one available
+    if formation_mode not in formations:
+        if formations:
+            formation_mode = list(formations.keys())[0]
+        else:
+            formation_mode = "4-2-3-1"
+            st.session_state.formation_mode = formation_mode
+
+    return _recompute_squad_assignments_locked(
+        club_country,
+        formation_mode,
+        force_variant_idx=force_variant_idx,
+    )
 
 def _recompute_squad_assignments_locked(
     club_country: str,
@@ -1289,9 +1344,8 @@ def _recompute_squad_assignments_locked(
     force_variant_idx: int | None = None,
 ):
     """
-    Locked formations: 4-2-3-1 & 5-2-1-2.
-
-    - Positions are fixed per slot (IP + OOP mapping).
+    Locked formations (now dynamic):
+    - Positions are fixed per slot (IP + OOP mapping) from st.session_state.formations[formation_mode]
     - Still obey: max 7 foreigners in XI, at least 1 U23 domestic in XI.
     - Bench / reserves + rule tracker are built via shared helper.
     """
@@ -1314,39 +1368,30 @@ def _recompute_squad_assignments_locked(
         st.session_state.rules_tracker = {}
         return
 
-    # Define slot templates per formation (IP position, OOP position)
-    if formation_mode == "4-2-3-1":
-        slot_defs = [
-            {"ip": "GK",  "oop": "GK"},
-            {"ip": "LB",  "oop": "LB"},
-            {"ip": "CB",  "oop": "CB"},
-            {"ip": "CB",  "oop": "CB"},
-            {"ip": "RB",  "oop": "RB"},
-            {"ip": "CDM", "oop": "CDM"},
-            {"ip": "CM",  "oop": "CDM"},
-            {"ip": "CAM", "oop": "CM"},
-            {"ip": "LW",  "oop": "LM"},
-            {"ip": "RW",  "oop": "RM"},
-            {"ip": "ST",  "oop": "ST"},
-        ]
-    elif formation_mode == "5-2-1-2":
-        slot_defs = [
-            {"ip": "GK",  "oop": "GK"},
-            {"ip": "LWB", "oop": "LWB"},
-            {"ip": "CB",  "oop": "CB"},
-            {"ip": "CB",  "oop": "CB"},
-            {"ip": "RWB", "oop": "CB"},
-            {"ip": "CDM", "oop": "RWB"},
-            {"ip": "CM",  "oop": "CDM"},
-            {"ip": "CM",  "oop": "CDM"},
-            {"ip": "CAM", "oop": "CAM"},
-            {"ip": "ST",  "oop": "ST"},
-            {"ip": "ST",  "oop": "ST"},
-        ]
-    else:
-        # Safety: if someone sets formation to nonsense, fall back
-        return _recompute_squad_assignments_auto(club_country, force_variant_idx=None)
+    formations = st.session_state.get("formations", {}) or {}
+    formation_def = formations.get(formation_mode)
 
+    # Backward compatibility: older saved formations were stored as a simple list of 11 IP positions
+    if isinstance(formation_def, list):
+        ip_11 = [p for p in formation_def]
+        oop_11 = [p for p in formation_def]
+        formations[formation_mode] = {"ip": ip_11, "oop": oop_11}
+        st.session_state.formations = formations
+    elif isinstance(formation_def, dict):
+        ip_11 = list(formation_def.get("ip") or [])
+        oop_11 = list(formation_def.get("oop") or [])
+    else:
+        ip_11 = []
+        oop_11 = []
+
+    ok, _ = validate_formation_positions(ip_11, oop_11)
+    if not ok:
+        st.session_state.xi_variants = []
+        st.session_state.xi_variant_count = 0
+        st.session_state.rules_tracker = {}
+        return
+
+    slot_defs = [{"ip": ip_11[i], "oop": oop_11[i]} for i in range(11)]
     num_slots = len(slot_defs)
 
     # Precompute candidates per slot: (player_idx, ip, oop, combined, is_foreign, is_u23_dom)
@@ -1366,43 +1411,98 @@ def _recompute_squad_assignments_locked(
 
             ip_score = single_pos_rating(p, ip_pos)
             oop_score = single_pos_rating_oop(p, oop_pos)
+            combined = ip_score + oop_score
 
-            # Locked formations: player must have non-zero rating
-            # in BOTH IP and OOP for this slot.
-            if ip_score <= 0 or oop_score <= 0:
-                continue
+            is_foreign = (p.get("nationality") or "").strip().lower() != (club_country or "").strip().lower()
+            is_u23_dom = (not is_foreign) and int(p.get("age") or 99) <= 23
 
-            combined = (ip_score + oop_score) / 2.0
-
-            foreign = not is_domestic(p.get("nationality", ""), club_country)
-            u23_dom = is_under23_domestic(p, club_country)
-
-            cand_list.append((idx, ip_score, oop_score, combined, foreign, u23_dom))
+            cand_list.append((idx, ip_score, oop_score, combined, is_foreign, is_u23_dom))
             if combined > max_score:
                 max_score = combined
 
-        # Sort by combined rating desc, then potential (band/league) and age
-        cand_list.sort(
-            key=lambda t: (
-                -t[3],  # combined score (IP+OOP)/2
-                *potential_tiebreak_tuple(players[t[0]]),
-            )
-        )
+        cand_list.sort(key=lambda t: t[3], reverse=True)
         slot_candidates.append(cand_list)
         slot_max_scores.append(max_score)
 
-    # If some slot has no viable players at all, fall back to auto logic
-    if any(len(cands) == 0 for cands in slot_candidates):
-        return _recompute_squad_assignments_auto(club_country, force_variant_idx=None)
+    # Search best assignment with constraints
+    best_total = -1e18
+    best_total_ip = -1e18
+    best_total_oop = -1e18
+    best_assign: list[tuple[int, float, float, float, bool, bool]] | None = None
 
-    # DFS to pick the best XI respecting foreign/U23 constraints
-    best_total = -1.0
-    best_total_ip = 0.0
-    best_total_oop = 0.0
-    best_assign: list[dict] = []
+    used: set[int] = set()
+    current: list[tuple[int, float, float, float, bool, bool]] = [None] * num_slots  # type: ignore
 
-    current_assign: list[dict] = []
-    used_players: set[int] = set()
+    def backtrack(slot_i: int, total_ip: float, total_oop: float, foreign_count: int, u23_dom_count: int):
+        nonlocal best_total, best_total_ip, best_total_oop, best_assign
+
+        if slot_i >= num_slots:
+            if foreign_count <= 7 and u23_dom_count >= 1:
+                total = total_ip + total_oop
+                if total > best_total:
+                    best_total = total
+                    best_total_ip = total_ip
+                    best_total_oop = total_oop
+                    best_assign = list(current)
+            return
+
+        # optimistic bound
+        remaining_max = 0.0
+        for j in range(slot_i, num_slots):
+            remaining_max += slot_max_scores[j]
+        if (total_ip + total_oop + remaining_max) <= best_total:
+            return
+
+        for cand in slot_candidates[slot_i]:
+            idx, ip_s, oop_s, combined, is_foreign, is_u23_dom = cand
+            if idx in used:
+                continue
+
+            new_foreign = foreign_count + (1 if is_foreign else 0)
+            if new_foreign > 7:
+                continue
+
+            used.add(idx)
+            current[slot_i] = cand
+
+            backtrack(
+                slot_i + 1,
+                total_ip + ip_s,
+                total_oop + oop_s,
+                new_foreign,
+                u23_dom_count + (1 if is_u23_dom else 0),
+            )
+
+            used.remove(idx)
+            current[slot_i] = None  # type: ignore
+
+    backtrack(0, 0.0, 0.0, 0, 0)
+
+    if not best_assign:
+        st.session_state.xi_variants = []
+        st.session_state.xi_variant_count = 0
+        st.session_state.rules_tracker = {}
+        return
+
+    # Build XI player dicts
+    xi_players: list[dict] = []
+    for slot_i, cand in enumerate(best_assign):
+        idx, ip_s, oop_s, combined, is_foreign, is_u23_dom = cand
+        p = dict(players[idx])
+        p["assigned_position_ip"] = slot_defs[slot_i]["ip"]
+        p["assigned_position_oop"] = slot_defs[slot_i]["oop"]
+        p["_assigned_ip_score"] = float(ip_s)
+        p["_assigned_oop_score"] = float(oop_s)
+        p["_assigned_total_score"] = float(combined)
+        xi_players.append(p)
+
+    # Use shared builder for bench/reserves/rules tracking (your existing helper)
+    _finalize_xi_and_lists(
+        club_country=club_country,
+        xi_players=xi_players,
+        formation_mode=formation_mode,
+        force_variant_idx=force_variant_idx,
+    )
 
     def dfs(
         slot_idx: int,
@@ -1477,7 +1577,10 @@ def _recompute_squad_assignments_locked(
 
     # No valid XI satisfying rules → fall back
     if best_total < 0 or not best_assign:
-        return _recompute_squad_assignments_auto(club_country, force_variant_idx=None)
+        st.session_state.xi_variants = []
+        st.session_state.xi_variant_count = 0
+        st.session_state.rules_tracker = {}
+        return
 
     # Build final XI based on best assignment
     final_xi_indices: list[int] = []
@@ -1498,7 +1601,10 @@ def _recompute_squad_assignments_locked(
     final_xi_indices = list(dict.fromkeys(final_xi_indices))
     if len(final_xi_indices) != num_slots:
         # Safety net
-        return _recompute_squad_assignments_auto(club_country, force_variant_idx=None)
+        st.session_state.xi_variants = []
+        st.session_state.xi_variant_count = 0
+        st.session_state.rules_tracker = {}
+        return
 
     # Clear all previous roles
     for p in players:
@@ -2028,7 +2134,7 @@ def _recompute_squad_assignments_auto(
                 best_pos = pos
         return best_pos
 
-    formation_mode = st.session_state.get("formation_mode", "Auto")
+    formation_mode = st.session_state.get("formation_mode", "4-2-3-1")
     # STEP 7–9: bench, reserves & rules (shared helper)
     bench_indices, reserve_indices, rules_tracker = _build_bench_and_reserves(
         players=players,
@@ -2136,12 +2242,10 @@ def _build_bench_and_reserves(
     def _cover_pos_for_formation(p: dict) -> str | None:
         """
         Formation-aware cover position:
-
-        - For locked formations (4-2-3-1 / 5-2-1-2): only positions that exist in that shape.
-        - For Auto: best among positions actually used in XI; falls back to best IP.
+        - For locked formations: best among positions that exist in that shape.
         """
         pos = best_cover_pos_for_formation(p, formation_mode)
-        if not pos and formation_mode == "Auto":
+        if not pos:
             pos = best_ip_position(p)
         return pos
 
@@ -2557,10 +2661,6 @@ def _preview_locked_squad(
         slot_candidates.append(cand_list)
         slot_max_scores.append(max_score)
 
-    # If some slot has no viable players at all, treat as "no valid XI" → empty sets
-    if any(len(cands) == 0 for cands in slot_candidates):
-        return set(), set(), set()
-
     # DFS to pick the best XI respecting foreign/U23 constraints
     best_total = -1.0
     best_total_ip = 0.0
@@ -2837,10 +2937,8 @@ with tab_players:
         st.session_state.p_nat_existing = ""
         st.session_state.p_nat_new = ""
         st.session_state.p_positions = []
-        st.session_state.p_current_band = ""
-        st.session_state.p_current_league = ""
-        st.session_state.p_potential_band = ""
-        st.session_state.p_potential_league = ""
+        st.session_state.p_current_stars = 2.5
+        st.session_state.p_potential_stars = 3.0
         st.session_state.p_availability = "Available"
         st.session_state.p_list_status = "None"
         st.session_state.p_injured = False
@@ -2874,16 +2972,9 @@ with tab_players:
                             st.session_state.p_nat_existing = ""
                             st.session_state.p_nat_new = nat
                         st.session_state.p_positions = p.get("positions", [])
-                        st.session_state.p_current_band = p.get("current_band", "")
-                        st.session_state.p_current_league = p.get(
-                            "current_level_league", ""
-                        )
-                        st.session_state.p_potential_band = p.get(
-                            "potential_band", ""
-                        )
-                        st.session_state.p_potential_league = p.get(
-                            "potential_level_league", ""
-                        )
+                        st.session_state.p_current_stars = float(p.get("current_stars", 2.5) or 2.5)
+                        st.session_state.p_potential_stars = float(p.get("potential_stars", 3.0) or 3.0)
+
                         st.session_state.p_availability = p.get(
                             "availability", "Available"
                         )
@@ -2915,10 +3006,8 @@ with tab_players:
     st.session_state.setdefault("p_age_input", 20)
     st.session_state.setdefault("p_nat_existing", "")
     st.session_state.setdefault("p_nat_new", "")
-    st.session_state.setdefault("p_current_band", "")
-    st.session_state.setdefault("p_current_league", "")
-    st.session_state.setdefault("p_potential_band", "")
-    st.session_state.setdefault("p_potential_league", "")
+    st.session_state.setdefault("p_current_stars", 2.5)
+    st.session_state.setdefault("p_potential_stars", 3.0)
     st.session_state.setdefault("p_positions", [])
     st.session_state.setdefault("p_availability", "Available")
     st.session_state.setdefault("p_list_status", "None")
@@ -2951,34 +3040,18 @@ with tab_players:
 
         row1_col1, row1_col2 = st.columns(2)
         with row1_col1:
-            current_band = st.selectbox(
-                "Current level",
-                [""] + RATING_BANDS,
-                format_func=lambda x: x if x else "No label",
-                key="p_current_band",
+            current_stars = st.selectbox(
+                "Current (stars)",
+                CP_STAR_VALUES,
+                format_func=stars_to_label,
+                key="p_current_stars",
             )
         with row1_col2:
-            current_level_league = st.selectbox(
-                "Current level league",
-                [""] + RATING_LEAGUES,
-                format_func=lambda x: x if x else "No league",
-                key="p_current_league",
-            )
-
-        row2_col1, row2_col2 = st.columns(2)
-        with row2_col1:
-            potential_band = st.selectbox(
-                "Potential level",
-                [""] + RATING_BANDS + POTENTIAL_EXTRA,
-                format_func=lambda x: x if x else "No label",
-                key="p_potential_band",
-            )
-        with row2_col2:
-            potential_level_league = st.selectbox(
-                "Potential level league",
-                [""] + RATING_LEAGUES,
-                format_func=lambda x: x if x else "No league",
-                key="p_potential_league",
+            potential_stars = st.selectbox(
+                "Potential (stars)",
+                CP_STAR_VALUES,
+                format_func=stars_to_label,
+                key="p_potential_stars",
             )
 
         row3_col1, row3_col2 = st.columns(2)
@@ -3051,10 +3124,8 @@ with tab_players:
                     "positions": p_positions or [],
                     "position_ratings": position_ratings_ip,        # IP
                     "position_ratings_oop": position_ratings_oop,  # OOP
-                    "current_band": current_band,
-                    "current_level_league": current_level_league,
-                    "potential_band": potential_band,
-                    "potential_level_league": potential_level_league,
+                    "current_stars": float(st.session_state.get("p_current_stars", 2.5) or 2.5),
+                    "potential_stars": float(st.session_state.get("p_potential_stars", 3.0) or 3.0),
                     "availability": p_availability,
                     "list_status": p_list_status,
                     "injured": bool(st.session_state.get("p_injured", False)),
@@ -3082,27 +3153,123 @@ with tab_players:
     if not st.session_state.players:
         st.info("No players yet.")
     else:
-        rows = []
-        for p in st.session_state.players:
-            positions_str = ", ".join(p.get("positions") or [])
-            current_str = current_rating_display_overall(p)
-            potential_str = potential_rating_display(p)
-            rows.append(
-                {
-                    "Name": p.get("name", ""),
-                    "Positions": positions_str,
-                    "Current": current_str,
-                    "Potential": potential_str,
-                    "Age": p.get("age", ""),
-                    "Nationality": p.get("nationality", ""),
-                    "Injured": "Yes" if p.get("injured") else "",
-                    "Availability": p.get("availability", "Available"),
-                    "List": p.get("list_status", "None"),
-                }
+
+        st.markdown("### Quick edit (fast rating updates)")
+
+        # Build editor table (use dataframe index as player index, so no _idx column)
+        quick_rows = []
+        for i, p in enumerate(st.session_state.players):
+            row = {
+                "Name": p.get("name", ""),
+                "Age": int(p.get("age", 20) or 20),
+                "Nationality": p.get("nationality", ""),
+                "Current⭐": float(p.get("current_stars", 2.5) or 2.5),
+                "Potential⭐": float(p.get("potential_stars", 3.0) or 3.0),
+                "Injured": bool(p.get("injured", False)),
+                "Availability": p.get("availability", "Available"),
+                "List": p.get("list_status", "None"),
+            }
+
+            # Add one column per position for IP and OOP rating (0.0 = cannot play)
+            pr_ip = p.get("position_ratings") or {}
+            pr_oop = p.get("position_ratings_oop") or {}
+
+            for pos in POSITION_CHOICES:
+                row[f"IP {pos}"] = float(pr_ip.get(pos, 0.0) or 0.0)
+                row[f"OOP {pos}"] = float(pr_oop.get(pos, 0.0) or 0.0)
+
+            quick_rows.append(row)
+
+        df_quick = pd.DataFrame(quick_rows)
+        df_quick.index = range(len(df_quick))  # stable mapping to st.session_state.players
+
+        # Column configs
+        col_cfg = {
+            "Current⭐": st.column_config.SelectboxColumn(
+                "Current⭐",
+                options=CP_STAR_VALUES,
+                format_func=stars_to_label,
+            ),
+            "Potential⭐": st.column_config.SelectboxColumn(
+                "Potential⭐",
+                options=CP_STAR_VALUES,
+                format_func=stars_to_label,
+            ),
+            "Availability": st.column_config.SelectboxColumn(
+                "Availability",
+                options=["Available", "Out on loan"],
+            ),
+            "List": st.column_config.SelectboxColumn(
+                "List",
+                options=["None", "Loan list", "Transfer list"],
+            ),
+        }
+
+        # Position star options (0.0–5.0, including 0.0 as "can't play")
+        for pos in POSITION_CHOICES:
+            col_cfg[f"IP {pos}"] = st.column_config.SelectboxColumn(
+                f"IP {pos}",
+                options=STAR_VALUES,
+                format_func=stars_to_label,
+            )
+            col_cfg[f"OOP {pos}"] = st.column_config.SelectboxColumn(
+                f"OOP {pos}",
+                options=STAR_VALUES,
+                format_func=stars_to_label,
             )
 
-        df_players = pd.DataFrame(rows)
-        st.dataframe(df_players, use_container_width=True, hide_index=True)
+        edited = st.data_editor(
+            df_quick,
+            use_container_width=True,
+            hide_index=True,  # no index column shown
+            column_config=col_cfg,
+            disabled=["Name", "Nationality"],
+            key="players_quick_edit_table",
+        )
+
+        if st.button("Apply quick edits", key="apply_quick_edits"):
+            # Apply back to players using dataframe index
+            for idx, row in edited.iterrows():
+                i = int(idx)
+                if i < 0 or i >= len(st.session_state.players):
+                    continue
+
+                p = st.session_state.players[i]
+
+                p["age"] = int(row["Age"])
+                p["current_stars"] = float(row["Current⭐"])
+                p["potential_stars"] = float(row["Potential⭐"])
+                p["injured"] = bool(row["Injured"])
+                p["availability"] = row["Availability"]
+                p["list_status"] = row["List"]
+
+                # Rebuild position ratings from table
+                new_ip = {}
+                new_oop = {}
+
+                for pos in POSITION_CHOICES:
+                    v_ip = float(row[f"IP {pos}"] or 0.0)
+                    v_oop = float(row[f"OOP {pos}"] or 0.0)
+
+                    if v_ip > 0:
+                        new_ip[pos] = v_ip
+                    if v_oop > 0:
+                        new_oop[pos] = v_oop
+
+                p["position_ratings"] = new_ip
+                p["position_ratings_oop"] = new_oop
+
+                # Update "positions" list to reflect anything playable in IP or OOP
+                playable = [
+                    pos for pos in POSITION_CHOICES
+                    if new_ip.get(pos, 0) > 0 or new_oop.get(pos, 0) > 0
+                ]
+                p["positions"] = playable
+
+            if country:
+                recompute_squad_assignments(country)
+            st.success("Quick edits applied.")
+            st.rerun()
 
 # =========================
 # TAB 3: POSITION OVERVIEW
@@ -3198,11 +3365,20 @@ with tab_xi:
     if not st.session_state.players:
         st.warning("Add players first.")
     else:
-        # Formation selector (stored, not yet fully wired into the optimiser)
-        formation_options = ["Auto", "4-2-3-1", "5-2-1-2"]
-        current_formation = st.session_state.get("formation_mode", "Auto")
+        formations = st.session_state.get("formations", {}) or {}
+
+        formation_options = list(formations.keys())
+        if not formation_options:
+            formation_options = ["4-2-3-1"]
+
+        current_formation = st.session_state.get("formation_mode", formation_options[0])
         if current_formation not in formation_options:
-            current_formation = "Auto"
+            current_formation = formation_options[0]
+
+        # Apply deferred formation change BEFORE the widget is instantiated
+        pending = st.session_state.pop("_pending_formation_mode", None)
+        if pending and pending in formation_options:
+            current_formation = pending
 
         formation_choice = st.radio(
             "Formation",
@@ -3211,6 +3387,78 @@ with tab_xi:
             horizontal=True,
             key="formation_mode",
         )
+
+        st.markdown("---")
+        st.subheader("Formation manager")
+
+        formations = st.session_state.get("formations", {}) or {}
+
+        with st.expander("Add / remove formations", expanded=False):
+            if formations:
+                st.markdown("**Existing formations**")
+                for fname in list(formations.keys()):
+                    cols = st.columns([4, 1])
+                    with cols[0]:
+                        st.markdown(f"- **{fname}**")
+                    with cols[1]:
+                        if st.button("Delete", key=f"del_form_{fname}"):
+                            formations.pop(fname, None)
+                            st.session_state.formations = formations
+                            if st.session_state.get("formation_mode") == fname:
+                                st.session_state["_pending_formation_mode"] = (list(formations.keys())[:1] or ["4-2-3-1"])[0]
+                            if country:
+                                recompute_squad_assignments(country)
+                            st.rerun()
+            else:
+                st.caption("No formations yet.")
+
+            st.markdown("#### Create new formation")
+            new_name = st.text_input("Formation name", key="new_form_name").strip()
+
+            st.caption("Pick exactly 11 IP positions and 11 OOP positions. Default max 1 each, but CB/CDM/CAM/ST can be up to 3.")
+
+            new_ip: list[str] = []
+            new_oop: list[str] = []
+
+            for i in range(11):
+                c_ip, c_oop = st.columns(2)
+                with c_ip:
+                    pos_ip = st.selectbox(
+                        f"Slot {i+1} (IP)",
+                        options=[""] + POSITION_CHOICES,
+                        index=0,
+                        key=f"new_form_ip_{i}",
+                    )
+                with c_oop:
+                    pos_oop = st.selectbox(
+                        f"Slot {i+1} (OOP)",
+                        options=[""] + POSITION_CHOICES,
+                        index=0,
+                        key=f"new_form_oop_{i}",
+                    )
+
+                new_ip.append((pos_ip or "").upper())
+                new_oop.append((pos_oop or "").upper())
+
+            if st.button("Save formation", key="save_new_formation"):
+                if not new_name:
+                    st.warning("Formation needs a name.")
+                elif new_name in formations:
+                    st.warning("That formation name already exists.")
+                else:
+                    clean_ip = [p for p in new_ip if p]
+                    clean_oop = [p for p in new_oop if p]
+                    ok, msg = validate_formation_positions(clean_ip, clean_oop)
+                    if not ok:
+                        st.warning(msg)
+                    else:
+                        formations[new_name] = {"ip": clean_ip, "oop": clean_oop}
+                        st.session_state.formations = formations
+                        st.session_state["_pending_formation_mode"] = new_name
+                        if country:
+                            recompute_squad_assignments(country)
+                        st.success(f"Saved formation: {new_name}")
+                        st.rerun()
 
         # How many XI variants do we have?
         variant_count = st.session_state.get("xi_variant_count", 0)
@@ -3656,7 +3904,7 @@ with tab_xi:
                 else:
                     rows_bench = []
 
-                    formation_mode = st.session_state.get("formation_mode", "Auto")
+                    formation_mode = st.session_state.get("formation_mode", "4-2-3-1")
 
                     for p in bench_players:
                         cover_pos = p.get("bench_cover_pos")
@@ -3732,7 +3980,7 @@ with tab_xi:
                 else:
                     rows_res = []
 
-                    formation_mode = st.session_state.get("formation_mode", "Auto")
+                    formation_mode = st.session_state.get("formation_mode", "4-2-3-1")
 
                     for p in reserve_players:
                         cover_pos = p.get("reserve_cover_pos")
@@ -3792,268 +4040,267 @@ with tab_xi:
                         )
 
                     st.dataframe(df_res, use_container_width=True, hide_index=True)
-
     # ========== SURPLUS (UNSELECTED) PLAYERS ==========
     all_players = st.session_state.players
 
-# ========== INJURY LIST ==========
-all_players = st.session_state.players
+    # ========== INJURY LIST ==========
+    all_players = st.session_state.players
 
-# Only players currently injured and not out on loan
-injured_players = [
-    p for p in all_players
-    if p.get("injured", False)
-    and p.get("availability", "Available") != "Out on loan"
-]
-
-st.subheader("Injury list")
-with st.expander("Injured players", expanded=False):
-
-    # --- TABLE of injured players ---
-    if not injured_players:
-        st.info("No injured players.")
-    else:
-        rows_inj = []
-        for p in injured_players:
-            rows_inj.append({
-                "Name": p.get("name", ""),
-                "Positions": ", ".join(p.get("positions") or []),
-                "Age": p.get("age", ""),
-                "Nationality": p.get("nationality", ""),
-                "Availability": p.get("availability", "Available"),
-            })
-        df_inj = pd.DataFrame(rows_inj)
-        st.dataframe(df_inj, use_container_width=True, hide_index=True)
-
-        # ---- RECOVER PLAYER ----
-        st.markdown("#### Mark player as recovered")
-        recover_choice = st.radio(
-            "Select injured player",
-            options=[""] + [p.get("name", "") for p in injured_players],
-            format_func=lambda x: "Select player" if x == "" else x,
-            key="inj_recover_choice",
-        )
-
-        if recover_choice:
-            if st.button("Set as recovered", key="inj_recover_button"):
-                for p in all_players:
-                    if p.get("name", "") == recover_choice:
-                        p["injured"] = False
-                        break
-                if country:
-                    recompute_squad_assignments(country)
-                st.rerun()
-
-    # --- ADD NEW INJURED PLAYER ---
-    st.markdown("#### Add injured player")
-
-    healthy_candidates = [
+    # Only players currently injured and not out on loan
+    injured_players = [
         p for p in all_players
-        if not p.get("injured", False)
+        if p.get("injured", False)
         and p.get("availability", "Available") != "Out on loan"
     ]
 
-    if not healthy_candidates:
-        st.caption("No healthy players available.")
-    else:
-        add_choice = st.selectbox(
-            "Select player to mark as injured",
-            options=[""] + [p.get("name", "") for p in healthy_candidates],
-            format_func=lambda x: "Select player" if x == "" else x,
-            key="inj_add_choice",
+    st.subheader("Injury list")
+    with st.expander("Injured players", expanded=False):
+
+        # --- TABLE of injured players ---
+        if not injured_players:
+            st.info("No injured players.")
+        else:
+            rows_inj = []
+            for p in injured_players:
+                rows_inj.append({
+                    "Name": p.get("name", ""),
+                    "Positions": ", ".join(p.get("positions") or []),
+                    "Age": p.get("age", ""),
+                    "Nationality": p.get("nationality", ""),
+                    "Availability": p.get("availability", "Available"),
+                })
+            df_inj = pd.DataFrame(rows_inj)
+            st.dataframe(df_inj, use_container_width=True, hide_index=True)
+  
+            # ---- RECOVER PLAYER ----
+            st.markdown("#### Mark player as recovered")
+            recover_choice = st.radio(
+                "Select injured player",
+                options=[""] + [p.get("name", "") for p in injured_players],
+                format_func=lambda x: "Select player" if x == "" else x,
+                key="inj_recover_choice",
+            )
+
+            if recover_choice:
+                if st.button("Set as recovered", key="inj_recover_button"):
+                    for p in all_players:
+                        if p.get("name", "") == recover_choice:
+                            p["injured"] = False
+                            break
+                    if country:
+                        recompute_squad_assignments(country)
+                    st.rerun()
+
+        # --- ADD NEW INJURED PLAYER ---
+        st.markdown("#### Add injured player")
+
+        healthy_candidates = [
+            p for p in all_players
+            if not p.get("injured", False)
+            and p.get("availability", "Available") != "Out on loan"
+        ]
+
+        if not healthy_candidates:
+            st.caption("No healthy players available.")
+        else:
+            add_choice = st.selectbox(
+                "Select player to mark as injured",
+                options=[""] + [p.get("name", "") for p in healthy_candidates],
+                format_func=lambda x: "Select player" if x == "" else x,
+                key="inj_add_choice",
+            )
+
+            if add_choice:
+                if st.button("Mark as injured", key="inj_add_button"):
+                    for p in all_players:
+                        if p.get("name", "") == add_choice:
+                            p["injured"] = True
+                            break
+                    if country:
+                        recompute_squad_assignments(country)
+                    st.rerun()
+
+    # ========== FOREIGN PLAYERS (CAP 11) ==========
+    foreign_indices: list[int] = []
+    for idx, p in enumerate(all_players):
+        # Only care about players still at the club
+        if p.get("availability", "Available") == "Out on loan":
+            continue
+        nat = p.get("nationality", "")
+        if not nat or is_domestic(nat, country):
+            continue
+        foreign_indices.append(idx)
+
+    def _foreign_sort_key(idx: int):
+        p = all_players[idx]
+        # Sort by best IP stars (desc), then potential (band/league), then age (younger first)
+        return (
+            -best_ip_rating(p),
+            *potential_tiebreak_tuple(p),
         )
 
-        if add_choice:
-            if st.button("Mark as injured", key="inj_add_button"):
-                for p in all_players:
-                    if p.get("name", "") == add_choice:
-                        p["injured"] = True
-                        break
-                if country:
-                    recompute_squad_assignments(country)
-                st.rerun()
+    foreign_indices_sorted = sorted(foreign_indices, key=_foreign_sort_key)
+    foreign_surplus_indices: set[int] = set()
 
-# ========== FOREIGN PLAYERS (CAP 11) ==========
-foreign_indices: list[int] = []
-for idx, p in enumerate(all_players):
-    # Only care about players still at the club
-    if p.get("availability", "Available") == "Out on loan":
-        continue
-    nat = p.get("nationality", "")
-    if not nat or is_domestic(nat, country):
-        continue
-    foreign_indices.append(idx)
+    # Cap at 11 foreign players: anything above is "surplus" foreign
+    if len(foreign_indices_sorted) > 11:
+        foreign_surplus_indices = set(foreign_indices_sorted[11:])
+    else:
+        foreign_surplus_indices = set()
 
-def _foreign_sort_key(idx: int):
-    p = all_players[idx]
-    # Sort by best IP stars (desc), then potential (band/league), then age (younger first)
-    return (
-        -best_ip_rating(p),
-        *potential_tiebreak_tuple(p),
-    )
+    if foreign_indices_sorted:
+        st.subheader("Foreign players")
+        with st.expander("Foreign players (max 11)", expanded=False):
+            rows_foreign = []
+            for rank, idx in enumerate(foreign_indices_sorted, start=1):
+                p = all_players[idx]
+                best_pos = best_ip_position(p)
+                best_star = best_ip_rating(p)
+                rows_foreign.append(
+                    {
+                        "Rank": rank,
+                        "Name": p.get("name", ""),
+                        "Best pos": best_pos or "",
+                        "Stars": stars_to_label(best_star),
+                        "Potential league level": p.get("potential_level_league", ""),
+                        "Potential level": p.get("potential_band", ""),
+                        "Age": p.get("age", ""),
+                        "Nationality": p.get("nationality", ""),
+                        "Status": "Over cap (surplus)" if idx in foreign_surplus_indices else "",
+                    }
+                )
 
-foreign_indices_sorted = sorted(foreign_indices, key=_foreign_sort_key)
-foreign_surplus_indices: set[int] = set()
+            df_foreign = pd.DataFrame(rows_foreign)
+            st.dataframe(df_foreign, use_container_width=True, hide_index=True)
 
-# Cap at 11 foreign players: anything above is "surplus" foreign
-if len(foreign_indices_sorted) > 11:
-    foreign_surplus_indices = set(foreign_indices_sorted[11:])
-else:
-    foreign_surplus_indices = set()
+    # Build the set of players that are used in at least one locked formation
+    used_any_locked: set[int] = set()
+    if country:
+        xi_4231, bench_4231, res_4231 = _preview_locked_squad(country, "4-2-3-1")
+        xi_5212, bench_5212, res_5212 = _preview_locked_squad(country, "5-2-1-2")
+        used_any_locked = (
+            xi_4231 | bench_4231 | res_4231 |
+            xi_5212 | bench_5212 | res_5212
+        )
 
-if foreign_indices_sorted:
-    st.subheader("Foreign players")
-    with st.expander("Foreign players (max 11)", expanded=False):
-        rows_foreign = []
-        for rank, idx in enumerate(foreign_indices_sorted, start=1):
-            p = all_players[idx]
-            best_pos = best_ip_position(p)
-            best_star = best_ip_rating(p)
-            rows_foreign.append(
+    # Build surplus list:
+    #  - Players not used in XI/Bench/Reserves in either locked formation
+    #  - PLUS foreign players above the 11-player club cap
+    surplus_players = []
+    for idx, p in enumerate(all_players):
+        # Skip players already out on loan
+        if p.get("availability", "Available") == "Out on loan":
+            continue
+
+        # Foreigners above cap are ALWAYS surplus, even if used elsewhere
+        if idx in foreign_surplus_indices:
+            surplus_players.append(p)
+            continue
+
+        # Normal surplus logic: not used in any locked formation
+        if idx in used_any_locked:
+            continue
+
+        surplus_players.append(p)
+
+    if surplus_players:
+        st.subheader("Surplus players")
+
+        st.markdown(
+            "Players that are **not** in XI, Bench or Reserves in either locked formation "
+            "and/or foreign players above the 11-player club limit, and not already out on loan. "
+            "Use the buttons to keep, loan out or sell."
+        )
+
+        # Build table-style rows (similar to bench)
+        rows_surplus = []
+        for p in surplus_players:
+            cover_pos = best_ip_position(p)
+            ip_rating = single_pos_rating(p, cover_pos) if cover_pos else 0.0
+            oop_rating = single_pos_rating_oop(p, cover_pos) if cover_pos else 0.0
+            rows_surplus.append(
                 {
-                    "Rank": rank,
                     "Name": p.get("name", ""),
-                    "Best pos": best_pos or "",
-                    "Stars": stars_to_label(best_star),
+                    "Cover pos": cover_pos or "",
+                    "IP": stars_to_label(ip_rating),
+                    "OOP": stars_to_label(oop_rating),
                     "Potential league level": p.get("potential_level_league", ""),
                     "Potential level": p.get("potential_band", ""),
-                    "Age": p.get("age", ""),
                     "Nationality": p.get("nationality", ""),
-                    "Status": "Over cap (surplus)" if idx in foreign_surplus_indices else "",
+                    "Age": p.get("age", ""),
+                    "__stars_numeric__": ip_rating,
                 }
             )
+ 
+        with st.expander("Surplus / unselected players", expanded=True):
+            # Table view
+            df_surplus = pd.DataFrame(rows_surplus)
+            if not df_surplus.empty:
+                df_surplus["__league_rank__"] = df_surplus["Potential league level"].map(
+                    POTENTIAL_LEAGUE_SORT
+                ).fillna(len(POTENTIAL_LEAGUE_SORT))
+                df_surplus["__band_rank__"] = df_surplus["Potential level"].map(
+                    POTENTIAL_BAND_SORT
+                ).fillna(len(POTENTIAL_BAND_SORT))
+                df_surplus = df_surplus.sort_values(
+                    ["__stars_numeric__", "__league_rank__", "__band_rank__", "Age", "Name"],
+                    ascending=[False, True, True, True, True],
+                    kind="mergesort",
+                ).drop(columns=["__stars_numeric__", "__league_rank__", "__band_rank__"])
+            st.dataframe(df_surplus, use_container_width=True, hide_index=True)
+  
+            st.markdown("#### Actions")
+  
+            # Per-player buttons: Keep / Loan out / Sell
+            for p in surplus_players:
+                name = p.get("name", "")
+                col_name, col_keep, col_loan, col_sell = st.columns([3, 1, 1, 1])
+                with col_name:
+                    st.markdown(f"**{name}**")
 
-        df_foreign = pd.DataFrame(rows_foreign)
-        st.dataframe(df_foreign, use_container_width=True, hide_index=True)
+                with col_keep:
+                    if st.button("Keep", key=f"surplus_keep_{name}"):
+                        p["list_status"] = "None"
+                        if country:
+                            recompute_squad_assignments(country)
+                        st.rerun()
 
-# Build the set of players that are used in at least one locked formation
-used_any_locked: set[int] = set()
-if country:
-    xi_4231, bench_4231, res_4231 = _preview_locked_squad(country, "4-2-3-1")
-    xi_5212, bench_5212, res_5212 = _preview_locked_squad(country, "5-2-1-2")
-    used_any_locked = (
-        xi_4231 | bench_4231 | res_4231 |
-        xi_5212 | bench_5212 | res_5212
-    )
+                with col_loan:
+                    if st.button("Loan out", key=f"surplus_loan_{name}"):
+                        p["availability"] = "Out on loan"
+                        p["list_status"] = "Loan list"
+                        if country:
+                            recompute_squad_assignments(country)
+                        st.rerun()
 
-# Build surplus list:
-#  - Players not used in XI/Bench/Reserves in either locked formation
-#  - PLUS foreign players above the 11-player club cap
-surplus_players = []
-for idx, p in enumerate(all_players):
-    # Skip players already out on loan
-    if p.get("availability", "Available") == "Out on loan":
-        continue
+                with col_sell:
+                    if st.button("Sell", key=f"surplus_sell_{name}"):
+                        st.session_state.players = [
+                            q for q in st.session_state.players if q is not p
+                        ]
+                        if country:
+                            recompute_squad_assignments(country)
+                        st.rerun()
 
-    # Foreigners above cap are ALWAYS surplus, even if used elsewhere
-    if idx in foreign_surplus_indices:
-        surplus_players.append(p)
-        continue
-
-    # Normal surplus logic: not used in any locked formation
-    if idx in used_any_locked:
-        continue
-
-    surplus_players.append(p)
-
-if surplus_players:
-    st.subheader("Surplus players")
-
-    st.markdown(
-        "Players that are **not** in XI, Bench or Reserves in either locked formation "
-        "and/or foreign players above the 11-player club limit, and not already out on loan. "
-        "Use the buttons to keep, loan out or sell."
-    )
-
-    # Build table-style rows (similar to bench)
-    rows_surplus = []
-    for p in surplus_players:
-        cover_pos = best_ip_position(p)
-        ip_rating = single_pos_rating(p, cover_pos) if cover_pos else 0.0
-        oop_rating = single_pos_rating_oop(p, cover_pos) if cover_pos else 0.0
-        rows_surplus.append(
-            {
-                "Name": p.get("name", ""),
-                "Cover pos": cover_pos or "",
-                "IP": stars_to_label(ip_rating),
-                "OOP": stars_to_label(oop_rating),
-                "Potential league level": p.get("potential_level_league", ""),
-                "Potential level": p.get("potential_band", ""),
-                "Nationality": p.get("nationality", ""),
-                "Age": p.get("age", ""),
-                "__stars_numeric__": ip_rating,
-            }
-        )
-
-    with st.expander("Surplus / unselected players", expanded=True):
-        # Table view
-        df_surplus = pd.DataFrame(rows_surplus)
-        if not df_surplus.empty:
-            df_surplus["__league_rank__"] = df_surplus["Potential league level"].map(
-                POTENTIAL_LEAGUE_SORT
-            ).fillna(len(POTENTIAL_LEAGUE_SORT))
-            df_surplus["__band_rank__"] = df_surplus["Potential level"].map(
-                POTENTIAL_BAND_SORT
-            ).fillna(len(POTENTIAL_BAND_SORT))
-            df_surplus = df_surplus.sort_values(
-                ["__stars_numeric__", "__league_rank__", "__band_rank__", "Age", "Name"],
-                ascending=[False, True, True, True, True],
-                kind="mergesort",
-            ).drop(columns=["__stars_numeric__", "__league_rank__", "__band_rank__"])
-        st.dataframe(df_surplus, use_container_width=True, hide_index=True)
-
-        st.markdown("#### Actions")
-
-        # Per-player buttons: Keep / Loan out / Sell
-        for p in surplus_players:
-            name = p.get("name", "")
-            col_name, col_keep, col_loan, col_sell = st.columns([3, 1, 1, 1])
-            with col_name:
-                st.markdown(f"**{name}**")
-
-            with col_keep:
-                if st.button("Keep", key=f"surplus_keep_{name}"):
-                    p["list_status"] = "None"
-                    if country:
-                        recompute_squad_assignments(country)
-                    st.rerun()
-
-            with col_loan:
-                if st.button("Loan out", key=f"surplus_loan_{name}"):
-                    p["availability"] = "Out on loan"
-                    p["list_status"] = "Loan list"
-                    if country:
-                        recompute_squad_assignments(country)
-                    st.rerun()
-
-            with col_sell:
-                if st.button("Sell", key=f"surplus_sell_{name}"):
-                    st.session_state.players = [
-                        q for q in st.session_state.players if q is not p
-                    ]
-                    if country:
-                        recompute_squad_assignments(country)
-                    st.rerun()
-
-# ========== PLAYERS OUT ON LOAN ==========
-loaned = [p for p in all_players if p.get("availability") == "Out on loan"]
-if loaned:
-    st.subheader("Players out on loan")
-    with st.expander("Players out on loan", expanded=False):
-        rows_loan = []
-        for p in loaned:
-            positions_str = ", ".join(p.get("positions") or [])
-            rows_loan.append(
-                {
-                    "Name": p.get("name", ""),
-                    "Positions": positions_str,
-                    "Age": p.get("age", ""),
-                    "Nationality": p.get("nationality", ""),
-                    "List": p.get("list_status", "None"),
-                }
-            )
-        df_loan = pd.DataFrame(rows_loan)
-        st.dataframe(df_loan, use_container_width=True, hide_index=True)
+    # ========== PLAYERS OUT ON LOAN ==========
+    loaned = [p for p in all_players if p.get("availability") == "Out on loan"]
+    if loaned:
+        st.subheader("Players out on loan")
+        with st.expander("Players out on loan", expanded=False):
+            rows_loan = []
+            for p in loaned:
+                positions_str = ", ".join(p.get("positions") or [])
+                rows_loan.append(
+                    {
+                        "Name": p.get("name", ""),
+                        "Positions": positions_str,
+                        "Age": p.get("age", ""),
+                        "Nationality": p.get("nationality", ""),
+                        "List": p.get("list_status", "None"),
+                    }
+                )
+            df_loan = pd.DataFrame(rows_loan)
+            st.dataframe(df_loan, use_container_width=True, hide_index=True)
 
 with tab_overview:
     st.header("Position overview")
@@ -4062,49 +4309,34 @@ with tab_overview:
     players = st.session_state.players
 
     # Formation selector here mirrors the XI tab and also controls targets
-    formation_options = ["Auto", "4-2-3-1", "5-2-1-2"]
-    current_formation = st.session_state.get("formation_mode", "Auto")
-    if current_formation not in formation_options:
-        current_formation = "Auto"
+    formations = st.session_state.get("formations", {}) or {}
+    formation_options = list(formations.keys())
 
-    formation_choice = st.radio(
-        "Formation (affects position coverage targets)",
-        options=formation_options,
-        index=formation_options.index(current_formation),
-        horizontal=True,
-        key="formation_mode_overview",
-    )
-
-    # Build position counts depending on formation
-    if formation_choice == "4-2-3-1":
-        # Fixed template
-        formation_ip_positions = [
-            "GK",
-            "LB", "CB", "CB", "RB",
-            "CDM", "CM",
-            "CAM",
-            "LW", "RW",
-            "ST",
-        ]
-    elif formation_choice == "5-2-1-2":
-        formation_ip_positions = [
-            "GK",
-            "LWB", "CB", "CB", "RWB",
-            "CDM", "CM", "CM",
-            "CAM",
-            "ST", "ST",
-        ]
-    else:
-        # AUTO: derive from the XI currently in use
-        xi_players_auto = [
-            p for p in players
-            if p.get("squad_role") == "XI"
-        ]
+    if not formation_options:
+        st.warning("No formations exist yet. Add one in the XI tab.")
+        formation_choice = ""
         formation_ip_positions = []
-        for p in xi_players_auto:
-            pos_ip = (p.get("assigned_position_ip") or "").upper()
-            if pos_ip:
-                formation_ip_positions.append(pos_ip)
+    else:
+        current_formation = st.session_state.get("formation_mode", formation_options[0])
+        if current_formation not in formation_options:
+            current_formation = formation_options[0]
+
+        pending = st.session_state.pop("_pending_formation_mode", None)
+        if pending and pending in formation_options:
+            current_formation = pending
+
+        formation_choice = st.radio(
+            "Formation",
+            options=formation_options,
+            index=formation_options.index(current_formation),
+            horizontal=True,
+            key="formation_mode",
+        )
+
+        # Keep the app-wide formation_mode in sync with overview selector
+
+        fdef = formations.get(formation_choice, {}) or {}
+        formation_ip_positions = fdef.get("ip") or []
 
     formation_pos_counts = Counter(formation_ip_positions)
 
