@@ -1310,6 +1310,121 @@ def build_xi_variants(
 
     return variants
 
+def _finalize_xi_and_lists(**kwargs):
+    """
+    Finalize XI + bench/reserves + rule tracker.
+
+    This is intentionally flexible (accepts **kwargs) because the caller signature
+    changed during refactors.
+    """
+    players = kwargs.get("players") or st.session_state.get("players") or []
+    club_country = kwargs.get("club_country") or ""
+    formation_mode = kwargs.get("formation_mode") or st.session_state.get("formation_mode")
+
+    xi_indices = list(kwargs.get("xi_indices") or [])
+    assignment_ip = dict(kwargs.get("assignment_ip") or {})
+    assignment_oop = dict(kwargs.get("assignment_oop") or {})
+
+    available_indices = list(kwargs.get("available_indices") or [])
+    if not available_indices:
+        # fallback: anyone not out on loan
+        available_indices = [
+            i for i, p in enumerate(players)
+            if p.get("availability", "Available") != "Out on loan"
+        ]
+
+    # Reset roles/assignments first
+    for p in players:
+        p["assigned_position_ip"] = None
+        p["assigned_position_oop"] = None
+        p["squad_role"] = "Unselected"
+        p["bench_cover_pos"] = None
+        p["reserve_cover_pos"] = None
+        p["bench_better_notes"] = ""
+
+    # Store XI variants in the format the app already uses elsewhere
+    if xi_indices:
+        st.session_state.xi_variants = [{
+            "xi_indices": sorted(xi_indices),
+            "assignment_ip": dict(assignment_ip),
+            "assignment_oop": dict(assignment_oop),
+            "total_ip": float(sum(single_pos_rating(players[i], assignment_ip.get(i, "") or "") for i in xi_indices)),
+            "total_oop": float(sum(single_pos_rating_oop(players[i], assignment_oop.get(i, "") or "") for i in xi_indices)),
+        }]
+        st.session_state.xi_variant_count = len(st.session_state.xi_variants)
+        if "xi_variant_choice" not in st.session_state:
+            st.session_state.xi_variant_choice = 0
+        else:
+            st.session_state.xi_variant_choice = min(int(st.session_state.xi_variant_choice or 0), st.session_state.xi_variant_count - 1)
+    else:
+        st.session_state.xi_variants = []
+        st.session_state.xi_variant_count = 0
+        st.session_state.xi_variant_choice = 0
+
+    # Apply XI assignment to player objects
+    for idx in xi_indices:
+        if idx < 0 or idx >= len(players):
+            continue
+        players[idx]["assigned_position_ip"] = assignment_ip.get(idx)
+        players[idx]["assigned_position_oop"] = assignment_oop.get(idx) or assignment_ip.get(idx)
+        players[idx]["squad_role"] = "XI"
+
+    # Build bench/reserves from remaining available players (prefer not injured)
+    remaining = [i for i in available_indices if i not in xi_indices]
+    not_injured = [i for i in remaining if not players[i].get("injured")]
+    injured = [i for i in remaining if players[i].get("injured")]
+    remaining_sorted = not_injured + injured
+
+    def bench_score(i: int) -> float:
+        # Prefer players who cover the active formation well (combined IP+OOP)
+        pos = best_cover_pos_for_formation(players[i], formation_mode)
+        if not pos:
+            return 0.0
+        return combined_ip_oop_for_pos(players[i], pos)
+
+    remaining_sorted.sort(key=lambda i: bench_score(i), reverse=True)
+
+    bench_indices = remaining_sorted[:7]
+    reserve_indices = remaining_sorted[7:]
+
+    for idx in bench_indices:
+        players[idx]["squad_role"] = "Bench"
+        players[idx]["bench_cover_pos"] = best_cover_pos_for_formation(players[idx], formation_mode)
+
+    for idx in reserve_indices:
+        players[idx]["squad_role"] = "Reserves"
+        players[idx]["reserve_cover_pos"] = best_cover_pos_for_formation(players[idx], formation_mode)
+
+    # Rules tracker (keep consistent with your existing keys)
+    foreign_xi = 0
+    foreign_bench = 0
+    u23_dom_xi = 0
+
+    for idx in xi_indices:
+        p = players[idx]
+        if not is_domestic(p.get("nationality", ""), club_country):
+            foreign_xi += 1
+        if is_under23_domestic(p, club_country):
+            u23_dom_xi += 1
+
+    for idx in bench_indices:
+        p = players[idx]
+        if not is_domestic(p.get("nationality", ""), club_country):
+            foreign_bench += 1
+
+    st.session_state.rules_tracker = {
+        "foreign_xi": foreign_xi,
+        "foreign_xi_limit": 7,
+        "foreign_xi_bench": foreign_bench,
+        "foreign_xi_bench_limit": 9,
+        "u23_domestic_xi": u23_dom_xi,
+        "u23_domestic_xi_min": 1,
+        "xi_size": len(xi_indices),
+        "bench_size": len(bench_indices),
+        "reserves_size": len(reserve_indices),
+        "total_selected": len(xi_indices) + len(bench_indices) + len(reserve_indices),
+    }
+
 def recompute_squad_assignments(
     club_country: str,
     force_variant_idx: int | None = None,
@@ -1330,7 +1445,6 @@ def recompute_squad_assignments(
             formation_mode = list(formations.keys())[0]
         else:
             formation_mode = "4-2-3-1"
-            st.session_state.formation_mode = formation_mode
 
     return _recompute_squad_assignments_locked(
         club_country,
@@ -4476,3 +4590,4 @@ with tab_overview:
 # =========================
 
 save_state_to_disk()
+
